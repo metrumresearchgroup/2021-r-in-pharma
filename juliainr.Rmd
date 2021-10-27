@@ -1,0 +1,107 @@
+---
+title: "juliainr Notebook"
+---
+
+# Setup evironment
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(JuliaConnectoR)
+```
+
+# Data wrangling in R
+
+```{r}
+data <- Theoph %>% 
+  filter(Subject == 3) %>%
+  mutate(amt = Dose*Wt)
+```
+
+# Build model using Julia
+
+## Using JuliaEval
+
+```{r}
+juliaEval('using Pkg; Pkg.activate(".")')
+juliaEval('using DifferentialEquations')
+
+odemodel <- juliaEval('
+  function pk1cpt!(du, u, p, t)
+  du[1] = -p[1]*u[1];
+  du[2] = (p[1]*u[1]) / p[3] - (p[2]/p[3])*u[2];
+  end
+')
+
+solveode <- juliaEval('
+function solveodemodel(dose, saveattimepoints)
+  # set conditions;
+  u0 = [dose, 0.0];
+  p = [2.45, 2.89, 34.25];
+  tspan = (0.0, 25.0);
+
+  # define ODE problem and solve;
+  prob = ODEProblem(pk1cpt!, u0, tspan, p);
+#  pred = Array(solve(prob, Tsit5()), saveat=data.Time)[2,:];  # solver options https://diffeq.sciml.ai/stable/solvers/ode_solve/ ; 
+  
+  sol = solve(prob, Tsit5(), saveat=saveattimepoints); 
+#  pred_time = sol.t;
+  pred = sol[2,:];
+  return(pred)
+end
+')
+
+# create dosing info and time points that will be pass into Julia
+dose = data[data$Time == 0,'amt']
+saveattimepoints = data$Time
+
+pred = solveode(dose, saveattimepoints)
+```
+
+### Plot in R
+
+```{r}
+df <- tibble(time = data$Time,
+             obs = data$conc,
+             pred = pred)
+
+ggplot(data = df, aes(x = time)) +
+  geom_point(aes(y = obs)) +
+  geom_line(aes(y = pred))
+```
+
+## Using JuliaImport
+
+```{r}
+diffeq <- juliaImport("DifferentialEquations")
+
+# define model
+pk1cpt <- juliaEval('function pk1cpt!(du, u, p, t)
+du[1] = -p[1]*u[1]
+du[2] = (p[1]*u[1]) / p[3] - (p[2]/p[3])*u[2]
+end')
+
+# set conditions
+dose <- data$amt[data$Time == 0]
+u0 <- c(dose, 0.0)
+p <- c(2.45, 2.89, 34.25)
+tspan <- c(0.0, 25.0)
+
+# define ODE problem and solve
+prob <- diffeq$ODEProblem(pk1cpt, u0, tspan, p)
+pred <- diffeq$solve(prob, diffeq$Tsit5(), saveat=data$Time) %>% as_tibble  # solver options https://diffeq.sciml.ai/stable/solvers/ode_solve/
+names(pred) <- c("time","depot","cent")
+```
+
+### Plot in R
+
+```{r}
+df <- tibble(time = data$Time,
+             obs = data$conc,
+             pred = pred$cent)
+
+ggplot(data = df, aes(x = time)) +
+  geom_point(aes(y = obs)) +
+  geom_line(aes(y = pred))
+```
+
